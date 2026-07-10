@@ -1,0 +1,184 @@
+--- markdown ---
+# MediVLM - MIMIC-CXR Sample Training & Verification
+
+This notebook lets you train the MediVLM model on a **tiny sample subset** of the MIMIC-CXR dataset first. This quickly verifies your GPU configuration and PyTorch libraries before launching the full training job!
+
+--- markdown ---
+## 1. Setup Environment
+Clone the repository and install required python dependencies.
+
+--- code ---
+!git clone https://github.com/sonai-commits/MediVLM.git
+%cd MediVLM
+!pip install -r requirements.txt
+!pip install radgraph RaTEScore
+!pip install -e .
+
+--- markdown ---
+## 2. Mount Google Drive and Unzip Dataset
+Mount your Drive and extract the files directly into the correct folder.
+
+--- code ---
+from google.colab import drive
+import os
+
+drive.mount('/content/drive')
+
+# CHANGE THIS if your zip file is named differently or is in a subfolder!
+ZIP_PATH = '/content/drive/MyDrive/mimic_cxr.zip'
+
+os.makedirs('data/mimic_cxr', exist_ok=True)
+
+if os.path.exists(ZIP_PATH):
+    print(f"\nFound {ZIP_PATH}! Unzipping into data/mimic_cxr...")
+    !unzip -q -n "{ZIP_PATH}" -d data/mimic_cxr
+    print("Unzip complete!")
+else:
+    print(f"Error: Could not find {ZIP_PATH}. Please check your Drive path.")
+
+--- markdown ---
+## 3. Generate Annotations from CSV
+The Kaggle dataset doesn't have the `annotations.json` file. We will generate it from the `mimic_cxr_aug_train.csv` file.
+
+--- code ---
+import pandas as pd
+import json
+import ast
+import os
+
+print("Reading Kaggle CSVs...")
+train_df = pd.read_csv('data/mimic_cxr/mimic_cxr_aug_train.csv')
+val_df = pd.read_csv('data/mimic_cxr/mimic_cxr_aug_validate.csv')
+
+def process_df(df):
+    samples = []
+    for idx, row in df.iterrows():
+        try:
+            img_list = ast.literal_eval(row['image'])
+            # Prepend the folder structure so the dataloader can find it
+            corrected_paths = [f"official_data_iccv_final/{p}" for p in img_list]
+            samples.append({
+                "id": str(row['subject_id']),
+                "image_path": corrected_paths,
+                "report": str(row['text'])
+            })
+        except Exception as e:
+            continue
+    return samples
+
+train_samples = process_df(train_df)
+val_samples = process_df(val_df)
+
+annotations = {
+    "train": train_samples,
+    "val": val_samples,
+    "test": val_samples
+}
+
+with open('data/mimic_cxr/annotations.json', 'w') as f:
+    json.dump(annotations, f)
+
+print(f"\nSaved annotations.json with {len(train_samples)} training samples.")
+
+--- markdown ---
+## 4. Filter Existing Images & Create Sample
+Since the zip file you uploaded only contains a subset of all the images listed in the CSV, we must filter out missing images and create `annotations_sample.json`.
+
+--- code ---
+print("Filtering missing images to create annotations_sample.json...")
+
+with open('data/mimic_cxr/annotations.json', 'r') as f:
+    ann = json.load(f)
+
+def get_existing(samples, limit):
+    valid = []
+    for s in samples:
+        path = "data/mimic_cxr/" + s['image_path'][0]
+        if os.path.exists(path):
+            valid.append(s)
+            if len(valid) == limit:
+                break
+    return valid
+
+sample_data = {
+    "train": get_existing(ann['train'], 20000),
+    "val": get_existing(ann['val'], 2000),
+    "test": get_existing(ann['test'], 2000)
+}
+
+with open('data/mimic_cxr/annotations_sample.json', 'w') as f:
+    json.dump(sample_data, f, indent=4)
+
+print(f"Success! Saved annotations_sample.json with {len(sample_data['train'])} valid training images.")
+
+--- markdown ---
+## 5. Create Configuration File
+Colab doesn't have your local `mimic_cxr_sample.yaml`, so let's generate it directly.
+
+--- code ---
+%%writefile configs/mimic_cxr_sample.yaml
+detector:
+  num_anatomical_classes: 29
+  weights_path: null
+  top_p_patches: 8
+  patch_size: 28
+  freeze: true
+image_encoder:
+  model_name: openai/clip-vit-large-patch14
+  image_size: 224
+  freeze: true
+text_encoder:
+  model_name: medicalai/ClinicalBERT
+  max_length: 128
+  freeze: true
+projection:
+  proj_dim: 512
+  temperature: 0.07
+  dropout: 0.1
+fusion:
+  num_heads: 8
+  dropout: 0.1
+decoder:
+  model_name: gpt2
+  trainable_blocks: 4
+  max_length: 77
+  beam_size: 4
+data:
+  dataset: mimic_cxr
+  root: data/mimic_cxr
+  ann_file: annotations_sample.json
+  image_size: 224
+  batch_size: 32
+  num_workers: 8
+training:
+  epochs: 3
+  lr: 2.0e-5
+  lambda_ce: 1.0
+  lambda_contrast: 0.7
+  output_dir: outputs/mimic_cxr_sample
+
+--- markdown ---
+## 6. Run the Fast Sample Training
+On a GPU (like T4 or L4), this training should complete successfully in under 2 to 5 minutes!
+
+--- code ---
+# Start smoke-test training
+!python scripts/train_supervised.py --config configs/mimic_cxr_sample.yaml
+
+--- markdown ---
+## 7. Run Inference on a Single Image
+Test the model on an uploaded image! (Upload `9_IM-2407-1001.dcm.png` to the Colab files section first).
+
+--- code ---
+!python scripts/inference.py \
+    --config configs/mimic_cxr_sample.yaml \
+    --checkpoint outputs/mimic_cxr_sample/best.ckpt \
+    --image /content/1.jpg
+
+--- markdown ---
+## 8. Launching the Full Training
+Once you verify everything works, you are ready to train on the entire MIMIC-CXR dataset for 30 epochs!
+
+--- code ---
+!python scripts/train_supervised.py --config configs/mimic_cxr.yaml
+
