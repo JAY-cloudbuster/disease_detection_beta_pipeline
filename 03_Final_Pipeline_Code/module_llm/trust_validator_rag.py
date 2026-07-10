@@ -12,7 +12,7 @@ class RAGValidator:
         Initializes the LLM Validator. Defaults to Gemini if configured, else OpenAI.
         """
         if use_gemini and os.getenv("GOOGLE_API_KEY"):
-            self.llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.1)
+            self.llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1)
         elif os.getenv("OPENAI_API_KEY"):
             self.llm = ChatOpenAI(model="gpt-4o", temperature=0.1)
         else:
