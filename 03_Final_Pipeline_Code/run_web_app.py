@@ -71,13 +71,13 @@ if uploaded_file is not None:
     st.write("### 1. Image Enhancement")
     col1, col2 = st.columns(2)
     
-    with col1:
-        st.image(Image.fromarray(img_rgb), caption="Original Input Image", use_column_width=True)
-        
     with st.spinner("Assessing quality and enhancing if necessary..."):
         # Save temp file for the enhancer which expects a path
         temp_path = "temp_input.jpg"
         cv2.imwrite(temp_path, img_bgr)
+        
+    with col1:
+        st.image(temp_path, caption="Original Input Image", use_column_width=True)
         
         enhanced_rgb, action_taken = enhancer.enhance(temp_path)
         
@@ -97,7 +97,11 @@ if uploaded_file is not None:
     for i, (disease, prob) in enumerate(probs.items()):
         with cols[i]:
             st.metric(label=disease, value=f"{prob*100:.1f}%")
-            st.image(Image.fromarray(heatmaps[disease]), caption=f"{disease} Saliency Map", use_column_width=True)
+            
+            heatmap_path = f"heatmap_{i}.jpg"
+            # heatmaps[disease] is RGB, cv2 expects BGR
+            cv2.imwrite(heatmap_path, cv2.cvtColor(heatmaps[disease], cv2.COLOR_RGB2BGR))
+            st.image(heatmap_path, caption=f"{disease} Saliency Map", use_column_width=True)
             
     st.divider()
     
