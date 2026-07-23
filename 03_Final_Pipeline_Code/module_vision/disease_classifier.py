@@ -9,6 +9,7 @@ import cv2
 from pytorch_grad_cam import ScoreCAM
 from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 from pytorch_grad_cam.utils.image import show_cam_on_image
+import os
 
 DISEASES = ["Cardiomegaly", "Edema", "Pleural Effusion"]
 
@@ -54,30 +55,39 @@ class HybridCNNTransformer(nn.Module):
         return self.classifier(cls_out)
 
 class DiseaseClassifier:
-    def __init__(self, model_path="best_hybrid_model.pth"):
+    def __init__(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = HybridCNNTransformer(num_classes=len(DISEASES)).to(self.device)
-        self.model.eval()
         
-        # Load weights if available
-        import os
-        if os.path.exists(model_path):
-            self.model.load_state_dict(torch.load(model_path, map_location=self.device))
-            print(f"Loaded classifier weights from {model_path}")
-        else:
-            print(f"Warning: {model_path} not found. Running with untrained weights for demonstration.")
-            
+        # Load Hybrid CNN Transformer
+        self.model_hybrid = HybridCNNTransformer(num_classes=len(DISEASES)).to(self.device)
+        if os.path.exists("best_hybrid_model.pth"):
+            try:
+                self.model_hybrid.load_state_dict(torch.load("best_hybrid_model.pth", map_location=self.device))
+                print("Loaded Hybrid CNN-Transformer weights.")
+            except Exception as e:
+                print(f"Warning: Failed to load best_hybrid_model.pth - {e}")
+        self.model_hybrid.eval()
+
+        # Load DenseNet121 Baseline
+        self.model_densenet = models.densenet121(weights="DEFAULT")
+        num_features = self.model_densenet.classifier.in_features
+        self.model_densenet.classifier = nn.Linear(num_features, len(DISEASES))
+        self.model_densenet = self.model_densenet.to(self.device)
+        if os.path.exists("best_chexpert_model.pth"):
+            try:
+                self.model_densenet.load_state_dict(torch.load("best_chexpert_model.pth", map_location=self.device))
+                print("Loaded DenseNet121 weights.")
+            except Exception as e:
+                print(f"Warning: Failed to load best_chexpert_model.pth - {e}")
+        self.model_densenet.eval()
+        
         self.transform = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
-        
-        # Initialize ScoreCAM
-        self.target_layer = self.model.cnn_backbone[-1]
-        self.cam = ScoreCAM(model=self.model, target_layers=[self.target_layer])
 
-    def predict_and_explain(self, img_rgb_np):
+    def predict_and_explain(self, img_rgb_np, model_choice="Hybrid CNN-Transformer"):
         """
         Takes an RGB numpy array, predicts diseases, and generates heatmaps.
         Returns:
@@ -91,12 +101,23 @@ class DiseaseClassifier:
         rgb_image = cv2.resize(img_rgb_np, (224, 224))
         rgb_image = np.float32(rgb_image) / 255.0
 
+        # Select model and target layer based on user dropdown choice
+        if model_choice == "Hybrid CNN-Transformer":
+            model_to_use = self.model_hybrid
+            target_layer = model_to_use.cnn_backbone[-1]
+        else:
+            model_to_use = self.model_densenet
+            target_layer = model_to_use.features[-1]
+
         with torch.no_grad():
-            outputs = self.model(input_tensor)
+            outputs = model_to_use(input_tensor)
             probs = torch.sigmoid(outputs)[0].cpu().numpy()
 
         results = {}
         heatmaps = {}
+
+        # Initialize ScoreCAM for the selected model
+        cam = ScoreCAM(model=model_to_use, target_layers=[target_layer])
 
         for i, disease in enumerate(DISEASES):
             prob = float(probs[i])
@@ -104,7 +125,7 @@ class DiseaseClassifier:
             
             # Generate CAM
             targets = [ClassifierOutputTarget(i)]
-            grayscale_cam = self.cam(input_tensor=input_tensor, targets=targets)[0]
+            grayscale_cam = cam(input_tensor=input_tensor, targets=targets)[0]
             visualization = show_cam_on_image(rgb_image, grayscale_cam, use_rgb=True)
             heatmaps[disease] = visualization
 
