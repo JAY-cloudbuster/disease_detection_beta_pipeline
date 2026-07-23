@@ -3,6 +3,8 @@ import cv2
 import numpy as np
 from PIL import Image
 import time
+import subprocess
+import os
 
 # Import our modularized pipeline components
 from module_vision.image_enhancer import ImageEnhancer
@@ -12,9 +14,6 @@ from module_llm.trust_validator_rag import RAGValidator
 # --- MOCK MediVLM ---
 # Since MediVLM was built by another teammate on MIMIC-CXR, 
 # you should replace this function with their actual inference code.
-import subprocess
-import os
-
 def generate_draft_report(image_path):
     """
     Calls the MediVLM inference script built by your teammate.
@@ -49,8 +48,8 @@ st.set_page_config(page_title="ReXTrust Pipeline", layout="wide")
 
 @st.cache_resource
 def load_models():
-    enhancer = ImageEnhancer(use_unimie=False) # Set True if you have the diffusion checkpoint
-    classifier = DiseaseClassifier(model_path="best_hybrid_model.pth")
+    enhancer = ImageEnhancer()
+    classifier = DiseaseClassifier()
     rag = RAGValidator(use_gemini=True) # Will fall back to OpenAI if Gemini key missing
     return enhancer, classifier, rag
 
@@ -69,9 +68,17 @@ if uploaded_file is not None:
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     
     st.write("### 1. Image Enhancement")
+    
+    enhancement_model = st.selectbox(
+        "Select Image Enhancement Model",
+        options=["Attention U-Net + CLAHE Pipeline", "Original", "CLAHE", "Zero-DCE", "U-Net V3", "Attention U-Net + CBAM"],
+        index=0,
+        help="Choose the model to enhance the X-ray image. Default is the best performing model."
+    )
+    
     col1, col2 = st.columns(2)
     
-    with st.spinner("Assessing quality and enhancing if necessary..."):
+    with st.spinner(f"Processing with {enhancement_model}..."):
         # Save temp file for the enhancer which expects a path
         temp_path = "temp_input.jpg"
         cv2.imwrite(temp_path, img_bgr)
@@ -79,7 +86,7 @@ if uploaded_file is not None:
     with col1:
         st.image(temp_path, caption="Original Input Image", use_column_width=True)
         
-        enhanced_rgb, action_taken = enhancer.enhance(temp_path)
+        enhanced_rgb, action_taken = enhancer.enhance(temp_path, model_choice=enhancement_model)
         
     with col2:
         st.image(enhanced_rgb, caption=f"Enhanced Image ({action_taken})", use_column_width=True)
@@ -87,8 +94,16 @@ if uploaded_file is not None:
     st.divider()
     
     st.write("### 2. Disease Detection & Visual Explainability (ScoreCAM)")
-    with st.spinner("Running Hybrid CNN-Transformer..."):
-        probs, heatmaps = classifier.predict_and_explain(enhanced_rgb)
+    
+    classifier_model = st.selectbox(
+        "Select Disease Classification Model",
+        options=["Hybrid CNN-Transformer", "DenseNet121"],
+        index=0,
+        help="Choose the underlying model for disease classification. The input will be the image from the Enhancement stage."
+    )
+    
+    with st.spinner(f"Running {classifier_model}..."):
+        probs, heatmaps = classifier.predict_and_explain(enhanced_rgb, model_choice=classifier_model)
         
     # Display probabilities and heatmaps
     num_diseases = len(probs)
@@ -123,4 +138,3 @@ if uploaded_file is not None:
                 st.success(final_report)
             except Exception as e:
                 st.error(f"RAG Validation failed (check API keys): {e}")
-
